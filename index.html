@@ -11,10 +11,10 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <style>
-        :root { --azul: #002350; --blanco: #ffffff; }
+        :root { --azul: #002350; --blanco: #ffffff; --verde: #28a745; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #f4f4f4; }
         
-        header { background: var(--azul); color: var(--blanco); padding: 15px 25px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        header { background: var(--azul); color: var(--blanco); padding: 15px 25px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); z-index: 1000; }
         header h1 { margin: 0; font-size: 1.3rem; }
         header p { margin: 4px 0 0; font-size: 0.9rem; opacity: 0.8; }
 
@@ -22,6 +22,13 @@
 
         .sidebar { width: 380px; background: white; border-right: 1px solid #ddd; overflow-y: auto; padding: 20px; box-shadow: 2px 0 10px rgba(0,0,0,0.05); }
         
+        /* Tarjetas de conteo */
+        .stats-container { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }
+        .stat-card { background: var(--azul); color: white; padding: 10px; border-radius: 6px; text-align: center; }
+        .stat-card.filter-stat { background: var(--verde); }
+        .stat-card span { display: block; font-size: 1.2rem; font-weight: bold; }
+        .stat-card label { font-size: 0.7rem; text-transform: uppercase; opacity: 0.9; }
+
         .status-info { background: #e7f3ff; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 0.85rem; color: #004085; border: 1px solid #b8daff; }
         
         .filter-item { background: #f8f9fa; padding: 12px; border-radius: 6px; margin-bottom: 12px; border: 1px solid #eee; }
@@ -29,7 +36,7 @@
         .filter-header label { font-weight: bold; font-size: 0.85rem; color: var(--azul); }
         
         .btn-analisis { font-size: 0.75rem; padding: 5px 10px; cursor: pointer; border-radius: 4px; border: 1px solid #ccc; background: #fff; transition: 0.3s; }
-        .btn-analisis.active { background: #28a745; color: white; border-color: #218838; }
+        .btn-analisis.active { background: var(--verde); color: white; border-color: #1e7e34; }
 
         select, .input-busqueda { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
 
@@ -39,7 +46,7 @@
 
         .popup-tabla { font-size: 11px; width: 100%; border-collapse: collapse; margin-top: 8px; }
         .popup-tabla td { border-bottom: 1px solid #eee; padding: 5px 2px; }
-        .btn-ruta { background: #28a745; color: white; border: none; padding: 10px; width: 100%; border-radius: 4px; cursor: pointer; margin-top: 10px; font-weight: bold; }
+        .btn-ruta { background: var(--verde); color: white; border: none; padding: 10px; width: 100%; border-radius: 4px; cursor: pointer; margin-top: 10px; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -51,7 +58,18 @@
 
 <div class="layout">
     <aside class="sidebar">
-        <div class="status-info" id="estadoCarga">⏳ Intentando cargar datos desde GitHub...</div>
+        <div class="stats-container">
+            <div class="stat-card">
+                <span id="total-global">0</span>
+                <label>Total Centros</label>
+            </div>
+            <div class="stat-card filter-stat">
+                <span id="total-filtrado">0</span>
+                <label>Filtrados</label>
+            </div>
+        </div>
+
+        <div class="status-info" id="estadoCarga">⏳ Sincronizando datos...</div>
 
         <div class="filter-item">
             <label><b>Buscador (Código / Centro Educativo)</b></label>
@@ -71,9 +89,10 @@
 
 <script>
     let mapa, capaMarcadores, datosBrutos = [], campoAnalisisActivo = null, objetoGrafico = null;
+    let mapaBase, satelite, topografico;
 
-    // IMPORTANTE: Este archivo debe estar en la raíz de tu repositorio de GitHub
     const NOMBRE_ARCHIVO = "bdatos_bcie26.xlsx"; 
+    const COLORES_PALETA = ['#002350', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6610f2', '#fd7e14', '#20c997', '#e83e8c', '#6f42c1'];
 
     const configuracionFiltros = [
         { etiqueta: "Departamento", campo: "Departamento" },
@@ -87,69 +106,54 @@
     ];
 
     function iniciarMapa() {
-        mapa = L.map('map').setView([13.794, -88.896], 9);
-        
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors'
-        }).addTo(mapa);
-        
+        // Capas Base
+        mapaBase = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OSM' });
+        satelite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Esri' });
+        topografico = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { attribution: 'OpenTopoMap' });
+
+        mapa = L.map('map', {
+            center: [13.794, -88.896],
+            zoom: 9,
+            layers: [mapaBase]
+        });
+
+        const capasBase = {
+            "Mapa de Calles": mapaBase,
+            "Satelital": satelite,
+            "Topográfico": topografico
+        };
+
+        L.control.layers(capasBase).addTo(mapa);
         capaMarcadores = L.layerGroup().addTo(mapa);
         
-        // Llamada automática al cargar la página
         cargarDatosDesdeGitHub();
     }
 
     async function cargarDatosDesdeGitHub() {
         try {
-            // Añadimos un parámetro ?t= para evitar que el navegador use una versión vieja (Cache Busting)
-            const timestamp = new Date().getTime();
-            const urlConCacheBuster = `${NOMBRE_ARCHIVO}?t=${timestamp}`;
-
-            const respuesta = await fetch(urlConCacheBuster);
-            
-            if (!respuesta.ok) throw new Error("No se pudo encontrar el archivo en el repositorio.");
-            
+            const t = new Date().getTime();
+            const respuesta = await fetch(`${NOMBRE_ARCHIVO}?t=${t}`);
+            if (!respuesta.ok) throw new Error("Archivo no encontrado.");
             const buffer = await respuesta.arrayBuffer();
-            const data = new Uint8Array(buffer);
-            const libro = XLSX.read(data, { type: 'array' });
+            const libro = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+            const json = XLSX.utils.sheet_to_json(libro.Sheets[libro.SheetNames[0]]);
             
-            // Leemos la primera hoja
-            const nombreHoja = libro.SheetNames[0];
-            const hoja = libro.Sheets[nombreHoja];
-            const json = XLSX.utils.sheet_to_json(hoja);
+            datosBrutos = json.filter(d => !isNaN(parseFloat(d.Latitud)) && !isNaN(parseFloat(d.Longitud)));
+            document.getElementById('total-global').innerText = datosBrutos.length;
             
-            if (json.length === 0) throw new Error("El archivo está vacío.");
-
-            procesarDatosEntrantes(json);
-            document.getElementById('estadoCarga').innerText = "✅ Base de datos sincronizada con GitHub";
-            document.getElementById('estadoCarga').style.background = "#d4edda";
-            document.getElementById('estadoCarga').style.color = "#155724";
-
+            crearControlesFiltro();
+            ejecutarFiltros();
+            document.getElementById('estadoCarga').innerText = "✅ Datos actualizados";
         } catch (error) {
-            document.getElementById('estadoCarga').innerHTML = `❌ Error: ${error.message}<br><small>Asegúrate de que el archivo excel esté en el repositorio.</small>`;
-            document.getElementById('estadoCarga').style.background = "#f8d7da";
-            document.getElementById('estadoCarga').style.color = "#721c24";
-            console.error(error);
+            document.getElementById('estadoCarga').innerText = "❌ Error al cargar datos";
         }
-    }
-
-    function procesarDatosEntrantes(datos) {
-        // Limpiamos y validamos coordenadas
-        datosBrutos = datos.filter(d => {
-            const lat = parseFloat(d.Latitud);
-            const lng = parseFloat(d.Longitud);
-            return !isNaN(lat) && !isNaN(lng);
-        });
-        crearControlesFiltro();
-        ejecutarFiltros();
     }
 
     function crearControlesFiltro() {
         const contenedor = document.getElementById('filtros-dinamicos');
         contenedor.innerHTML = '';
-        
         configuracionFiltros.forEach(conf => {
-            const valoresUnicos = [...new Set(datosBrutos.map(d => d[conf.campo]).filter(Boolean))].sort();
+            const valores = [...new Set(datosBrutos.map(d => d[conf.campo]).filter(Boolean))].sort();
             const div = document.createElement('div');
             div.className = 'filter-item';
             div.innerHTML = `
@@ -159,7 +163,7 @@
                 </div>
                 <select class="seleccion-filtro" data-campo="${conf.campo}" onchange="ejecutarFiltros()">
                     <option value="">Todos</option>
-                    ${valoresUnicos.map(v => `<option value="${v}">${v}</option>`).join('')}
+                    ${valores.map(v => `<option value="${v}">${v}</option>`).join('')}
                 </select>
             `;
             contenedor.appendChild(div);
@@ -167,108 +171,101 @@
     }
 
     function ejecutarFiltros() {
-        const textoBusqueda = document.getElementById('busquedaPrincipal').value.toLowerCase();
+        const busqueda = document.getElementById('busquedaPrincipal').value.toLowerCase();
         const selectores = document.querySelectorAll('.seleccion-filtro');
         
         const filtrados = datosBrutos.filter(d => {
-            const nombreC = (d['Centro Educativo'] || "").toString().toLowerCase();
-            const codigoC = (d['Código'] || "").toString().toLowerCase();
-            const cumpleBusqueda = nombreC.includes(textoBusqueda) || codigoC.includes(textoBusqueda);
-            
+            const cumpleBusqueda = (d['Centro Educativo'] || "").toString().toLowerCase().includes(busqueda) || 
+                                   (d['Código'] || "").toString().toLowerCase().includes(busqueda);
             let cumpleSelectores = true;
             selectores.forEach(sel => {
                 if (sel.value && String(d[sel.dataset.campo]) !== sel.value) cumpleSelectores = false;
             });
-            
             return cumpleBusqueda && cumpleSelectores;
         });
 
+        document.getElementById('total-filtrado').innerText = filtrados.length;
         actualizarPuntosMapa(filtrados);
         if (campoAnalisisActivo) actualizarGrafico(filtrados);
     }
 
+    function obtenerColor(valor, listaCategorias) {
+        if (!campoAnalisisActivo || !valor) return "#002350";
+        const index = listaCategorias.indexOf(valor);
+        return COLORES_PALETA[index % COLORES_PALETA.length];
+    }
+
     function actualizarPuntosMapa(datos) {
         capaMarcadores.clearLayers();
+        
+        // Obtener categorías únicas para el color si hay análisis activo
+        let categorias = [];
+        if (campoAnalisisActivo) {
+            categorias = [...new Set(datosBrutos.map(d => d[campoAnalisisActivo]).filter(Boolean))].sort();
+        }
+
         datos.forEach(p => {
-            const colorPunto = p.Etapa === "Contructivo finalizado" ? "#28a745" : "#ffc107";
+            const colorDinamico = campoAnalisisActivo ? obtenerColor(p[campoAnalisisActivo], categorias) : "#002350";
             
             const m = L.circleMarker([parseFloat(p.Latitud), parseFloat(p.Longitud)], {
                 radius: 8,
-                fillColor: colorPunto,
+                fillColor: colorDinamico,
                 color: "#fff",
                 weight: 1,
                 fillOpacity: 0.9
             });
             
-            let contenidoTabla = "";
-            for (let clave in p) {
-                if(clave !== "Latitud" && clave !== "Longitud") {
-                    contenidoTabla += `<tr><td><b>${clave}:</b></td><td>${p[clave] || 'N/A'}</td></tr>`;
-                }
-            }
+            let tabla = "";
+            for (let c in p) if(c !== "Latitud" && c !== "Longitud") tabla += `<tr><td><b>${c}:</b></td><td>${p[c] || '-'}</td></tr>`;
 
-            m.bindPopup(`
-                <div style="max-height:250px; overflow-y:auto; min-width:220px;">
-                    <b style="color:var(--azul); font-size:14px;">${p['Centro Educativo']}</b>
-                    <table class="popup-tabla">${contenidoTabla}</table>
-                    <button class="btn-ruta" onclick="calcularRuta(${p.Latitud}, ${p.Longitud})">Ver Ruta (GPS)</button>
-                </div>
-            `);
+            m.bindPopup(`<div style="max-height:200px; overflow-y:auto; min-width:200px;">
+                <b>${p['Centro Educativo']}</b><table class="popup-tabla">${tabla}</table>
+                <button class="btn-ruta" onclick="window.open('https://www.google.com/maps/dir/?api=1&destination=${p.Latitud},${p.Longitud}')">GPS</button>
+            </div>`);
             capaMarcadores.addLayer(m);
         });
     }
 
     function alternarAnalisis(campo) {
         const contenedor = document.getElementById('contenedor-grafico');
-        
         if (campoAnalisisActivo === campo) {
             document.getElementById(`btn-${campo}`).classList.remove('active');
             campoAnalisisActivo = null;
             contenedor.style.display = 'none';
         } else {
-            if(campoAnalisisActivo) {
-                const btnAnterior = document.getElementById(`btn-${campoAnalisisActivo}`);
-                if(btnAnterior) btnAnterior.classList.remove('active');
-            }
+            if(campoAnalisisActivo) document.getElementById(`btn-${campoAnalisisActivo}`).classList.remove('active');
             campoAnalisisActivo = campo;
             document.getElementById(`btn-${campo}`).classList.add('active');
             contenedor.style.display = 'block';
-            document.getElementById('titulo-grafico').innerText = `Análisis: ${campo}`;
-            ejecutarFiltros();
+            document.getElementById('titulo-grafico').innerText = `Análisis por: ${campo}`;
         }
+        ejecutarFiltros(); // Esto refresca colores en mapa y el gráfico
     }
 
     function actualizarGrafico(datos) {
         const conteo = {};
-        datos.forEach(d => {
-            const valor = d[campoAnalisisActivo] || "No indicado";
-            conteo[valor] = (conteo[valor] || 0) + 1;
-        });
+        datos.forEach(d => { const v = d[campoAnalisisActivo] || "N/A"; conteo[v] = (conteo[v] || 0) + 1; });
 
         const ctx = document.getElementById('canvasGrafico').getContext('2d');
         if(objetoGrafico) objetoGrafico.destroy();
         
         objetoGrafico = new Chart(ctx, {
-            type: 'pie',
+            type: 'bar',
             data: {
                 labels: Object.keys(conteo),
                 datasets: [{
+                    label: 'Cantidad',
                     data: Object.values(conteo),
-                    backgroundColor: ['#002350', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6610f2', '#fd7e14', '#20c997']
+                    backgroundColor: COLORES_PALETA
                 }]
             },
-            options: { 
+            options: {
+                indexAxis: 'y', // Hace que las barras sean horizontales
                 responsive: true,
-                plugins: { 
-                    legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } 
-                } 
+                plugins: { legend: { display: false } },
+                scales: { x: { beginAtZero: true, ticks: { precision: 0 } } }
             }
         });
-    }
-
-    function calcularRuta(lat, lng) {
-        const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
-        window.open(url, '_blank');
     }
 
     window.onload = iniciarMapa;
