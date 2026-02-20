@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel de Monitoreo MINEDUCYT – BCIE</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        :root { --azul: #002350; --blanco: #ffffff; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #f4f4f4; }
+        
+        header { background: var(--azul); color: var(--blanco); padding: 15px 25px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+        header h1 { margin: 0; font-size: 1.3rem; }
+        header p { margin: 4px 0 0; font-size: 0.9rem; opacity: 0.8; }
+
+        .layout { display: flex; flex: 1; overflow: hidden; }
+
+        .sidebar { width: 380px; background: white; border-right: 1px solid #ddd; overflow-y: auto; padding: 20px; box-shadow: 2px 0 10px rgba(0,0,0,0.05); }
+        
+        .status-info { background: #e7f3ff; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 0.85rem; color: #004085; border: 1px solid #b8daff; }
+        
+        .filter-item { background: #f8f9fa; padding: 12px; border-radius: 6px; margin-bottom: 12px; border: 1px solid #eee; }
+        .filter-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .filter-header label { font-weight: bold; font-size: 0.85rem; color: var(--azul); }
+        
+        .btn-analisis { font-size: 0.75rem; padding: 5px 10px; cursor: pointer; border-radius: 4px; border: 1px solid #ccc; background: #fff; transition: 0.3s; }
+        .btn-analisis.active { background: #28a745; color: white; border-color: #218838; }
+
+        select, .input-busqueda { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+
+        #contenedor-grafico { margin-top: 20px; padding: 15px; background: #fff; border-top: 3px solid var(--azul); display: none; }
+
+        #map { flex: 1; z-index: 1; }
+
+        .popup-tabla { font-size: 11px; width: 100%; border-collapse: collapse; margin-top: 8px; }
+        .popup-tabla td { border-bottom: 1px solid #eee; padding: 5px 2px; }
+        .btn-ruta { background: #28a745; color: white; border: none; padding: 10px; width: 100%; border-radius: 4px; cursor: pointer; margin-top: 10px; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Monitoreo y seguimiento de condiciones ambientales y sociales</h1>
+    <p>Programa Mi Nueva Escuela MINEDUCYT – BCIE</p>
+</header>
+
+<div class="layout">
+    <aside class="sidebar">
+        <div class="status-info" id="estadoCarga">⏳ Intentando cargar datos desde GitHub...</div>
+
+        <div class="filter-item">
+            <label><b>Buscador (Código / Centro Educativo)</b></label>
+            <input type="text" id="busquedaPrincipal" class="input-busqueda" placeholder="Ej: 10588 o Nombre..." onkeyup="ejecutarFiltros()">
+        </div>
+
+        <div id="filtros-dinamicos"></div>
+
+        <div id="contenedor-grafico">
+            <h4 id="titulo-grafico" style="margin:0 0 10px 0; font-size: 0.9rem; text-align: center; color: var(--azul);">Análisis de Datos</h4>
+            <canvas id="canvasGrafico"></canvas>
+        </div>
+    </aside>
+
+    <div id="map"></div>
+</div>
+
+<script>
+    let mapa, capaMarcadores, datosBrutos = [], campoAnalisisActivo = null, objetoGrafico = null;
+
+    // IMPORTANTE: Este archivo debe estar en la raíz de tu repositorio de GitHub
+    const NOMBRE_ARCHIVO = "bdatos_bcie26.xlsx"; 
+
+    const configuracionFiltros = [
+        { etiqueta: "Departamento", campo: "Departamento" },
+        { etiqueta: "Empresa Obras", campo: "Empresa obras" },
+        { etiqueta: "Número de Contrato", campo: "Número de contrato" },
+        { etiqueta: "Empresa Supervisión", campo: "Empresa supervisión" },
+        { etiqueta: "Administrador de Contrato", campo: "Administrador de contrato" },
+        { etiqueta: "Etapa", campo: "Etapa" },
+        { etiqueta: "Estado de PEGAS", campo: "Estado de PEGAS" },
+        { etiqueta: "Reubicación Temporal", campo: "Reubicación Temporal" }
+    ];
+
+    function iniciarMapa() {
+        mapa = L.map('map').setView([13.794, -88.896], 9);
+        
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(mapa);
+        
+        capaMarcadores = L.layerGroup().addTo(mapa);
+        
+        // Llamada automática al cargar la página
+        cargarDatosDesdeGitHub();
+    }
+
+    async function cargarDatosDesdeGitHub() {
+        try {
+            // Añadimos un parámetro ?t= para evitar que el navegador use una versión vieja (Cache Busting)
+            const timestamp = new Date().getTime();
+            const urlConCacheBuster = `${NOMBRE_ARCHIVO}?t=${timestamp}`;
+
+            const respuesta = await fetch(urlConCacheBuster);
+            
+            if (!respuesta.ok) throw new Error("No se pudo encontrar el archivo en el repositorio.");
+            
+            const buffer = await respuesta.arrayBuffer();
+            const data = new Uint8Array(buffer);
+            const libro = XLSX.read(data, { type: 'array' });
+            
+            // Leemos la primera hoja
+            const nombreHoja = libro.SheetNames[0];
+            const hoja = libro.Sheets[nombreHoja];
+            const json = XLSX.utils.sheet_to_json(hoja);
+            
+            if (json.length === 0) throw new Error("El archivo está vacío.");
+
+            procesarDatosEntrantes(json);
+            document.getElementById('estadoCarga').innerText = "✅ Base de datos sincronizada con GitHub";
+            document.getElementById('estadoCarga').style.background = "#d4edda";
+            document.getElementById('estadoCarga').style.color = "#155724";
+
+        } catch (error) {
+            document.getElementById('estadoCarga').innerHTML = `❌ Error: ${error.message}<br><small>Asegúrate de que el archivo excel esté en el repositorio.</small>`;
+            document.getElementById('estadoCarga').style.background = "#f8d7da";
+            document.getElementById('estadoCarga').style.color = "#721c24";
+            console.error(error);
+        }
+    }
+
+    function procesarDatosEntrantes(datos) {
+        // Limpiamos y validamos coordenadas
+        datosBrutos = datos.filter(d => {
+            const lat = parseFloat(d.Latitud);
+            const lng = parseFloat(d.Longitud);
+            return !isNaN(lat) && !isNaN(lng);
+        });
+        crearControlesFiltro();
+        ejecutarFiltros();
+    }
+
+    function crearControlesFiltro() {
+        const contenedor = document.getElementById('filtros-dinamicos');
+        contenedor.innerHTML = '';
+        
+        configuracionFiltros.forEach(conf => {
+            const valoresUnicos = [...new Set(datosBrutos.map(d => d[conf.campo]).filter(Boolean))].sort();
+            const div = document.createElement('div');
+            div.className = 'filter-item';
+            div.innerHTML = `
+                <div class="filter-header">
+                    <label>${conf.etiqueta}</label>
+                    <button class="btn-analisis" id="btn-${conf.campo}" onclick="alternarAnalisis('${conf.campo}')">Analizar</button>
+                </div>
+                <select class="seleccion-filtro" data-campo="${conf.campo}" onchange="ejecutarFiltros()">
+                    <option value="">Todos</option>
+                    ${valoresUnicos.map(v => `<option value="${v}">${v}</option>`).join('')}
+                </select>
+            `;
+            contenedor.appendChild(div);
+        });
+    }
+
+    function ejecutarFiltros() {
+        const textoBusqueda = document.getElementById('busquedaPrincipal').value.toLowerCase();
+        const selectores = document.querySelectorAll('.seleccion-filtro');
+        
+        const filtrados = datosBrutos.filter(d => {
+            const nombreC = (d['Centro Educativo'] || "").toString().toLowerCase();
+            const codigoC = (d['Código'] || "").toString().toLowerCase();
+            const cumpleBusqueda = nombreC.includes(textoBusqueda) || codigoC.includes(textoBusqueda);
+            
+            let cumpleSelectores = true;
+            selectores.forEach(sel => {
+                if (sel.value && String(d[sel.dataset.campo]) !== sel.value) cumpleSelectores = false;
+            });
+            
+            return cumpleBusqueda && cumpleSelectores;
+        });
+
+        actualizarPuntosMapa(filtrados);
+        if (campoAnalisisActivo) actualizarGrafico(filtrados);
+    }
+
+    function actualizarPuntosMapa(datos) {
+        capaMarcadores.clearLayers();
+        datos.forEach(p => {
+            const colorPunto = p.Etapa === "Contructivo finalizado" ? "#28a745" : "#ffc107";
+            
+            const m = L.circleMarker([parseFloat(p.Latitud), parseFloat(p.Longitud)], {
+                radius: 8,
+                fillColor: colorPunto,
+                color: "#fff",
+                weight: 1,
+                fillOpacity: 0.9
+            });
+            
+            let contenidoTabla = "";
+            for (let clave in p) {
+                if(clave !== "Latitud" && clave !== "Longitud") {
+                    contenidoTabla += `<tr><td><b>${clave}:</b></td><td>${p[clave] || 'N/A'}</td></tr>`;
+                }
+            }
+
+            m.bindPopup(`
+                <div style="max-height:250px; overflow-y:auto; min-width:220px;">
+                    <b style="color:var(--azul); font-size:14px;">${p['Centro Educativo']}</b>
+                    <table class="popup-tabla">${contenidoTabla}</table>
+                    <button class="btn-ruta" onclick="calcularRuta(${p.Latitud}, ${p.Longitud})">Ver Ruta (GPS)</button>
+                </div>
+            `);
+            capaMarcadores.addLayer(m);
+        });
+    }
+
+    function alternarAnalisis(campo) {
+        const contenedor = document.getElementById('contenedor-grafico');
+        
+        if (campoAnalisisActivo === campo) {
+            document.getElementById(`btn-${campo}`).classList.remove('active');
+            campoAnalisisActivo = null;
+            contenedor.style.display = 'none';
+        } else {
+            if(campoAnalisisActivo) {
+                const btnAnterior = document.getElementById(`btn-${campoAnalisisActivo}`);
+                if(btnAnterior) btnAnterior.classList.remove('active');
+            }
+            campoAnalisisActivo = campo;
+            document.getElementById(`btn-${campo}`).classList.add('active');
+            contenedor.style.display = 'block';
+            document.getElementById('titulo-grafico').innerText = `Análisis: ${campo}`;
+            ejecutarFiltros();
+        }
+    }
+
+    function actualizarGrafico(datos) {
+        const conteo = {};
+        datos.forEach(d => {
+            const valor = d[campoAnalisisActivo] || "No indicado";
+            conteo[valor] = (conteo[valor] || 0) + 1;
+        });
+
+        const ctx = document.getElementById('canvasGrafico').getContext('2d');
+        if(objetoGrafico) objetoGrafico.destroy();
+        
+        objetoGrafico = new Chart(ctx, {
+            type: 'pie',
+            data: {
+                labels: Object.keys(conteo),
+                datasets: [{
+                    data: Object.values(conteo),
+                    backgroundColor: ['#002350', '#28a745', '#ffc107', '#dc3545', '#17a2b8', '#6610f2', '#fd7e14', '#20c997']
+                }]
+            },
+            options: { 
+                responsive: true,
+                plugins: { 
+                    legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } 
+                } 
+            }
+        });
+    }
+
+    function calcularRuta(lat, lng) {
+        const url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+        window.open(url, '_blank');
+    }
+
+    window.onload = iniciarMapa;
+</script>
+</body>
+</html>
